@@ -14,16 +14,18 @@ import type {
   LettaAgent,
   LettaCodeModelEntry,
   LettaConversation,
-  ReasoningEffort,
+  ReasoningEffort as SdkReasoningEffort,
 } from "@letta-ai/letta-agent-sdk/client";
 
 import { CLOUD_DEFAULT_URL, type Profile } from "../profiles/profiles";
 import { OAuthTokenError } from "../auth/oauthTokens";
 
-// Re-exported so UI code imports from the app's data module, but the
-// definition is the SDK's — no drift (previously narrowed to low|medium|high,
-// silently hiding none/minimal/xhigh).
-export type { ReasoningEffort };
+/**
+ * Reasoning effort, widened with "max" — the model catalog ships "max"
+ * variants (claude + gpt-5.6 lines) and the Anthropic model settings accept
+ * it, but the SDK's own union omits it.
+ */
+export type ReasoningEffort = SdkReasoningEffort | "max";
 
 export interface AgentSummary {
   id: string;
@@ -34,7 +36,10 @@ export interface AgentSummary {
 }
 
 /** Display projection of the SDK's model entry — same fields, same names. */
-export type ModelOption = Pick<LettaCodeModelEntry, "id" | "handle" | "label">;
+export type ModelOption = Pick<LettaCodeModelEntry, "id" | "handle" | "label"> & {
+  /** Catalog default/variant reasoning effort for this entry, if declared. */
+  effort?: ReasoningEffort;
+};
 
 interface Connection {
   profile: Profile;
@@ -354,7 +359,9 @@ function modelSettingsFor(model: string, effort?: ReasoningEffort): ModelSetting
       : undefined;
   }
   if (provider === "openai") {
-    return { provider_type: "openai", reasoning: { reasoning_effort: effort } };
+    // The typed SDK field omits "max" but the catalog ships OpenAI "max"
+    // variants and the protocol accepts it — pass it through.
+    return { provider_type: "openai", reasoning: { reasoning_effort: effort as SdkReasoningEffort } };
   }
   return undefined;
 }
@@ -364,5 +371,14 @@ function modelSettingsFor(model: string, effort?: ReasoningEffort): ModelSetting
 export async function listModels(conn: Connection): Promise<ModelOption[]> {
   // Session-less on every backend since SDK 0.3.1 — no sandbox just to open a picker.
   const result = await sdkClient(conn).models.list();
-  return result.entries.map((e) => ({ id: e.id, handle: e.handle, label: e.label }));
+  const EFFORTS: readonly ReasoningEffort[] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+  return result.entries.map((e) => {
+    const raw = e.updateArgs?.reasoning_effort;
+    return {
+      id: e.id,
+      handle: e.handle,
+      label: e.label,
+      effort: typeof raw === "string" && (EFFORTS as readonly string[]).includes(raw) ? (raw as ReasoningEffort) : undefined,
+    };
+  });
 }
