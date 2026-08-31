@@ -152,13 +152,22 @@ export class ChatSession {
   private ensureSession(): LettaCodeSession {
     if (this.session) return this.session;
     const client = sdkClient(this.conn);
-    // Cloud sessions execute in an SDK-managed sandbox (the SDK default).
-    // TODO(sdk) BUG: routing to an online environment via
-    // resumeSession(id, { environment }) fails against production — cloud-api
-    // closes the status socket with 1013 "Listener connection unavailable"
-    // when the SDK sends runtime_start, even with the listener online (see
-    // SDK-FEEDBACK.md). Re-enable pickCloudEnvironment() once fixed.
+    // Cloud sessions route to the profile's selected computer when one is
+    // set; otherwise the SDK provisions a managed sandbox (its default).
+    // Routing via the `computer` option works against production — unlike
+    // the `environment` option, which cloud-api rejects with 1013 "Listener
+    // connection unavailable" (see SDK-FEEDBACK.md) — so this replaces the
+    // old disabled pickCloudEnvironment() auto-routing with explicit user
+    // selection.
+    // Strip the display-only `name` field — the SDK's ComputerSelector type
+    // doesn't have a { connectionId, name } variant.
+    const raw = this.conn.profile.computerSelector;
+    const computer =
+      raw && typeof raw === "object" && "connectionId" in raw
+        ? { connectionId: raw.connectionId }
+        : raw;
     this.session = client.resumeSession(this.conversationId, {
+      ...(computer ? { computer } : {}),
       // Tool approvals surface as an ApprovalRequest in the snapshot; the
       // ApprovalCard resolves it via resolveApproval(). The run stays in
       // awaiting_approval until the user decides.

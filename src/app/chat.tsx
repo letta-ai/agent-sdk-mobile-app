@@ -25,6 +25,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ApprovalCard } from "../components/chat/ApprovalCard";
 import { ConnectionBanner } from "../components/chat/Banner";
 import { ModelSheet } from "../components/chat/ModelSheet";
+import { EnvironmentSheet } from "../components/chat/EnvironmentSheet";
+import type { ComputerSummary } from "../lib/letta/api";
 import { QueueCapsule } from "../components/chat/QueueCapsule";
 import { QueueSheet } from "../components/chat/QueueSheet";
 import {
@@ -49,6 +51,7 @@ import { ChatSession } from "../lib/letta/ChatSession";
 import {
   getConversationModel,
   isAuthError,
+  listComputers,
   listModels,
   updateConversationModel,
   type ModelOption,
@@ -63,7 +66,7 @@ import {
 } from "../lib/letta/model";
 import { groupToolRuns, type TranscriptRowItem } from "../lib/letta/grouping";
 import { pickImages, type Attachment } from "../lib/letta/attachments";
-import { getSecret } from "../lib/profiles/profiles";
+import { getSecret, saveProfile } from "../lib/profiles/profiles";
 import { useProfiles } from "../lib/profiles/ProfilesContext";
 import { useTheme } from "../theme/ThemeProvider";
 import { motion, radius, space } from "../theme/tokens";
@@ -119,7 +122,7 @@ export default function ChatScreen() {
   const params = useLocalSearchParams<{ conversationId: string; agentId: string; agentName?: string; title?: string; autosend?: string }>();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
-  const { activeProfile } = useProfiles();
+  const { activeProfile, refresh: refreshProfiles } = useProfiles();
 
   const sessionRef = useRef<ChatSession | null>(null);
   const listRef = useRef<FlatList<TranscriptRowItem>>(null);
@@ -223,6 +226,10 @@ export default function ChatScreen() {
 
   // Conversation-scoped model + reasoning controls.
   const modelSheetRef = useRef<BottomSheetModal>(null);
+  const envSheetRef = useRef<BottomSheetModal>(null);
+  const [computers, setComputers] = useState<ComputerSummary[]>([]);
+  const [envLoading, setEnvLoading] = useState(false);
+  const [envError, setEnvError] = useState<string | null>(null);
   const queueSheetRef = useRef<BottomSheetModal>(null);
   const controlsSheetRef = useRef<BottomSheetModal>(null);
   const [models, setModels] = useState<ModelOption[]>([]);
@@ -371,6 +378,57 @@ export default function ChatScreen() {
     },
     [activeProfile, params.conversationId, model, effort],
   );
+
+  // ── Environment selector (cloud profiles only) ──────────────────────────
+  const openEnvSheet = useCallback(async () => {
+    if (!activeProfile) return;
+    setEnvError(null);
+    envSheetRef.current?.present();
+    if (computers.length === 0 && activeProfile.type === "cloud") {
+      setEnvLoading(true);
+      try {
+        const secret = (await getSecret(activeProfile.id)) ?? "";
+        setComputers(await listComputers({ profile: activeProfile, secret }));
+      } catch {
+        setEnvError("Couldn't load environments.");
+      } finally {
+        setEnvLoading(false);
+      }
+    }
+  }, [activeProfile, computers.length]);
+
+  const selectEnvironment = useCallback(
+    async (connectionId: string | null, name: string | null) => {
+      if (!activeProfile) return;
+      const secret = await getSecret(activeProfile.id);
+      const updated: typeof activeProfile = {
+        ...activeProfile,
+        computerSelector: connectionId ? { connectionId, name: name ?? undefined } : undefined,
+      };
+      await saveProfile(updated, secret);
+      // Refresh the in-memory profile context so the chip and session
+      // routing pick up the new computerSelector immediately.
+      await refreshProfiles();
+      // Force a new session on next send so the computer option takes effect.
+      if (sessionRef.current) {
+        sessionRef.current.close();
+        sessionRef.current = null;
+      }
+    },
+    [activeProfile, refreshProfiles],
+  );
+
+  // Display label for the environment chip — the name is stored in the
+  // profile's computerSelector alongside the connectionId.
+  const envChipLabel = activeProfile?.computerSelector
+    ? typeof activeProfile.computerSelector === "string"
+      ? activeProfile.computerSelector
+      : "name" in activeProfile.computerSelector && activeProfile.computerSelector.name
+        ? activeProfile.computerSelector.name
+        : "connectionId" in activeProfile.computerSelector
+          ? activeProfile.computerSelector.connectionId.slice(0, 8)
+          : "env"
+    : null;
 
   const running = snapshot.run === "running" || snapshot.run === "awaiting_approval";
   const aborting = snapshot.run === "aborting";
@@ -665,6 +723,18 @@ export default function ChatScreen() {
                 {!modelSaving && effort ? ` · ${effort}` : ""}
               </Text>
             </Touchable>
+            {activeProfile?.type === "cloud" ? (
+              <Touchable
+                accessibilityRole="button"
+                accessibilityLabel={`Environment: ${envChipLabel ?? "Cloud Sandbox"}. Change environment`}
+                onPress={openEnvSheet}
+                style={styles.modelChip}
+              >
+                <Text role="sub" ink={2} mono numberOfLines={1}>
+                  {envChipLabel ?? "cloud"}
+                </Text>
+              </Touchable>
+            ) : null}
             {snapshot.device ? (
               <Touchable
                 accessibilityRole="button"
@@ -785,6 +855,22 @@ export default function ChatScreen() {
         onSelect={(handle, nextEffort) => void selectModel(handle, nextEffort)}
         error={modelError}
       />
+      {activeProfile?.type === "cloud" ? (
+        <EnvironmentSheet
+          ref={envSheetRef}
+          computers={computers}
+          selectedConnectionId={
+            activeProfile?.computerSelector && typeof activeProfile.computerSelector === "object" && "connectionId" in activeProfile.computerSelector
+              ? activeProfile.computerSelector.connectionId
+              : null
+          }
+          onSelect={(connectionId, name) => {
+            void selectEnvironment(connectionId, name);
+          }}
+          loading={envLoading}
+          error={envError}
+        />
+      ) : null}
     </Screen>
   );
 }

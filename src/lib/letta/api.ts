@@ -3,14 +3,12 @@
  *
  * As of SDK 0.3.1 everything here rides the portable client's first-class
  * APIs (`client.agents.*`, `client.conversations.*`, `client.models.*`,
- * `client.createAgent`) — identical on cloud and remote. The only raw REST
- * left is `pickCloudEnvironment` (environments listing has no SDK surface;
- * currently unused: environment routing closes the status socket with 1013,
- * see letta-cloud#13382).
+ * `client.createAgent`) — identical on cloud and remote.
  */
 import { LettaAgentClient, createReactNativeWebSocketConstructor } from "@letta-ai/letta-agent-sdk/client";
 import type {
   UpdateConversationOptions,
+  Computer,
   LettaAgent,
   LettaCodeModelEntry,
   LettaConversation,
@@ -160,28 +158,39 @@ export async function deleteAgent(conn: Connection, agentId: string): Promise<vo
   await sdkClient(conn).agents.delete(agentId);
 }
 
-// ── Execution targets ───────────────────────────────────────────────────────
+// ── Computers / Environments ────────────────────────────────────────────────
+
+/** Display projection of the SDK's Computer record. */
+export interface ComputerSummary {
+  /** Stable identifier for the physical device across reconnects. */
+  deviceId: string;
+  /** Human-readable computer name. */
+  name: string;
+  /** Current online connection lease (null when offline). */
+  connectionId: string | null;
+  status: "online" | "offline";
+}
+
+function toComputerSummary(record: Computer): ComputerSummary {
+  return {
+    deviceId: record.deviceId,
+    name: record.name,
+    connectionId: record.connectionId,
+    status: record.status,
+  };
+}
 
 /**
- * Pick where a cloud session should execute. If the account has an
- * environment (a `letta` listener) online right now, route the session there —
- * that's the "chat with the agent on my homeserver" case and avoids spinning
- * a sandbox. Otherwise return undefined and let the SDK manage a sandbox.
+ * List computers registered with this Letta Cloud account. Cloud only —
+ * remote profiles connect to a single app-server directly.
  */
-export async function pickCloudEnvironment(conn: Connection): Promise<{ connectionId: string } | undefined> {
-  if (conn.profile.type !== "cloud") return undefined;
-  try {
-    const body = (await cloudFetch(conn, "/v1/environments")) as {
-      connections?: { id: string; lastSeenAt?: number }[];
-    };
-    const now = Date.now();
-    const online = (body.connections ?? [])
-      .filter((c) => typeof c.lastSeenAt === "number" && now - c.lastSeenAt! < 120_000)
-      .sort((a, b) => (b.lastSeenAt ?? 0) - (a.lastSeenAt ?? 0));
-    return online[0] ? { connectionId: online[0].id } : undefined;
-  } catch {
-    return undefined;
-  }
+export async function listComputers(conn: Connection, opts: { onlineOnly?: boolean } = {}): Promise<ComputerSummary[]> {
+  if (conn.profile.type !== "cloud") return [];
+  const result = await sdkClient(conn).computers.list({
+    limit: 50,
+    ...(opts.onlineOnly ? { onlineOnly: true } : {}),
+  });
+  return result.computers.map(toComputerSummary);
 }
 
 // ── Conversations ───────────────────────────────────────────────────────────

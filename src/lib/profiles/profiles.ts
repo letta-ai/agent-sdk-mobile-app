@@ -19,6 +19,13 @@ import {
 export type ProfileType = "cloud" | "remote";
 export type CloudAuthMethod = "oauth" | "api_key";
 
+/**
+ * Selector for the computer where cloud sessions execute tools. Mirrors the
+ * SDK's `ComputerSelector` — a string name, or an object with
+ * deviceId/id/connectionId. When absent, the SDK provisions a managed sandbox.
+ */
+export type ComputerSelectorField = string | { name: string } | { deviceId: string } | { id: string } | { connectionId: string; name?: string };
+
 export interface Profile {
   id: string;
   type: ProfileType;
@@ -27,6 +34,12 @@ export interface Profile {
   url: string;
   /** Existing Cloud profiles omit this field and remain API-key profiles. */
   authMethod?: CloudAuthMethod;
+  /**
+   * Cloud only: which computer/environment sessions execute on. When absent,
+   * the SDK provisions a managed sandbox. Stored per-profile because
+   * environments are tied to the cloud account, not individual conversations.
+   */
+  computerSelector?: ComputerSelectorField;
   /** Result of the last "Test connection" run. */
   lastTest?: "ok" | "unauthorized" | "unreachable";
   createdAt: number;
