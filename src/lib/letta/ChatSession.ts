@@ -83,6 +83,13 @@ export function subscribeConversationActivity(listener: () => void): () => void 
 }
 
 export class ChatSession {
+  /**
+   * Run-completion callback for system notifications: fires once per turn —
+   * local result frames and external-run loop_status idle transitions alike.
+   */
+  onRunCompleted: ((success: boolean, isExternal: boolean) => void) | null = null;
+  private externalRunActive = false;
+
   private conn: { profile: Profile; secret: string };
   private conversationId: string;
   private session: LettaCodeSession | null = null;
@@ -932,6 +939,14 @@ export class ChatSession {
         // what used to make a freshly-opened chat show a phantom turn, since
         // opening one reports WAITING_ON_INPUT.
         const status = message.status.toUpperCase();
+        // External-run completion: loop_status IDLE after foreign run traffic
+        // is the only terminal signal external runs produce on this session.
+        if (status !== "IDLE" && !status.startsWith("WAITING")) {
+          this.externalRunActive = true;
+        } else if (status === "IDLE" && this.externalRunActive) {
+          this.externalRunActive = false;
+          this.onRunCompleted?.(true, true);
+        }
         if (status === "WAITING_ON_APPROVAL") {
           return this.project(patch(snapshot, { run: "awaiting_approval" }));
         }
@@ -950,6 +965,7 @@ export class ChatSession {
         const interrupted = !message.success || message.stopReason === "interrupted";
         this.interruptedKey = interrupted ? newestTextKey(this.accumulator.rows()) : null;
         const idle = this.project(patch(snapshot, { run: "idle" }));
+        this.onRunCompleted?.(message.success !== false, false);
         return message.success
           ? idle
           : this.appendError(idle, message.errorDetail ?? message.error ?? "The run failed.");
