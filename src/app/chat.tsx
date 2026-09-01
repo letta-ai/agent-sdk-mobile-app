@@ -66,6 +66,9 @@ import { pickImages, type Attachment } from "../lib/letta/attachments";
 import { getSecret } from "../lib/profiles/profiles";
 import { useProfiles } from "../lib/profiles/ProfilesContext";
 import { useTheme } from "../theme/ThemeProvider";
+import { Dropdown } from "../components/ui/Dropdown";
+import { NotificationMode, labelFor, loadAppDefault, loadConversationSetting, resolveMode, saveConversationSetting } from "../lib/notifications";
+import { configureNotifications, postConversationNotification, requestNotificationPermission } from "../lib/notificationPoster";
 import { motion, radius, space } from "../theme/tokens";
 
 // Memoized so a streaming flush only re-renders the row whose item changed:
@@ -122,9 +125,14 @@ export default function ChatScreen() {
   const { activeProfile } = useProfiles();
 
   const sessionRef = useRef<ChatSession | null>(null);
+  // Foreground state for notification gating (notify only when backgrounded).
+  const appStateVisibleRef = useRef(true);
   const listRef = useRef<FlatList<TranscriptRowItem>>(null);
   const [snapshot, setSnapshot] = useState<ChatSnapshot>({ ...emptyChat, hydrating: true });
   const [draft, setDraft] = useState("");
+  // Per-conversation notification setting + dropdown visibility.
+  const [notifSetting, setNotifSetting] = useState<NotificationMode>(NotificationMode.APP_DEFAULT);
+  const [notifResolved, setNotifResolved] = useState<NotificationMode>(NotificationMode.ALL_MESSAGES);
   // The nav param is only the title as it was when this screen was opened; a
   // rename (here or elsewhere) makes the server's value the truth.
   const [serverTitle, setServerTitle] = useState<string | null>(null);
@@ -132,11 +140,62 @@ export default function ChatScreen() {
   // Collapsed tool runs the reader has opened (see lib/letta/grouping).
   const [expandedGroups, setExpandedGroups] = useState<ReadonlySet<string>>(() => new Set());
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  // Load the per-conversation notification setting when the conversation opens.
+  // Also request notification permission once per install (no-op if granted).
+  useEffect(() => {
+    if (!params.conversationId) return;
+    let cancelled = false;
+    void (async () => {
+      void requestNotificationPermission();
+      const [conv, app] = await Promise.all([
+        loadConversationSetting(params.conversationId),
+        loadAppDefault(),
+      ]);
+      if (cancelled) return;
+      setNotifSetting(conv);
+      setNotifResolved(resolveMode(conv, app));
+    })();
+    return () => { cancelled = true; };
+  }, [params.conversationId]);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (state) => {
+      appStateVisibleRef.current = state === "active";
+    });
+    return () => sub.remove();
+  }, []);
+
   const attach = useCallback(async () => {
     haptic.tap();
     const picked = await pickImages();
     if (picked.length > 0) setAttachments((current) => [...current, ...picked].slice(0, 4));
   }, []);
+
+  // Handle a run completion: check notification mode + screen visibility,
+  // post a system notification if appropriate.
+  const handleRunCompletion = useCallback(
+    async (conversationId: string, title: string, success: boolean, isExternal: boolean) => {
+      // Don't notify if the app is foregrounded on this screen — the user is
+      // already watching the transcript update live.
+      if (appStateVisibleRef.current) return;
+      const [conv, app] = await Promise.all([
+        loadConversationSetting(conversationId),
+        loadAppDefault(),
+      ]);
+      const mode = resolveMode(conv, app);
+      if (mode === NotificationMode.OFF) return;
+      // MOBILE_ONLY: only notify for runs started from this app.
+      if (mode === NotificationMode.MOBILE_ONLY && isExternal) return;
+      // ALL_MESSAGES: notify for all runs.
+      await configureNotifications();
+      await postConversationNotification(
+        conversationId,
+        title,
+        success ? "Run complete" : "Run ended with an error",
+      );
+    },
+    [],
+  );
   const nearBottomRef = useRef(true);
   // Inverted list: the newest content lives at offset 0.
   const pinToLatest = useCallback(() => {
@@ -223,6 +282,7 @@ export default function ChatScreen() {
 
   // Conversation-scoped model + reasoning controls.
   const modelSheetRef = useRef<BottomSheetModal>(null);
+  const notifSheetRef = useRef<BottomSheetModal>(null);
   const queueSheetRef = useRef<BottomSheetModal>(null);
   const controlsSheetRef = useRef<BottomSheetModal>(null);
   const [models, setModels] = useState<ModelOption[]>([]);
@@ -275,6 +335,12 @@ export default function ChatScreen() {
         }
         opened = session;
         sessionRef.current = session;
+        // System notifications for run completions (mode + visibility gated
+        // inside the handler).
+        session.onRunCompleted = (success, isExternal) => {
+          const title = params.title ?? params.agentName ?? "Conversation";
+          void handleRunCompletion(params.conversationId, title, success, isExternal);
+        };
         // Scrolling belongs to the list's onContentSizeChange, not here: a
         // snapshot-time scroll races layout, since the hydration batch measures
         // after the scroll fires.
@@ -665,6 +731,16 @@ export default function ChatScreen() {
                 {!modelSaving && effort ? ` · ${effort}` : ""}
               </Text>
             </Touchable>
+            <Touchable
+              accessibilityRole="button"
+              accessibilityLabel={`Notifications: ${labelFor(notifResolved)}. Change`}
+              onPress={() => notifSheetRef.current?.present()}
+              style={styles.modelChip}
+            >
+              <Text role="sub" ink={2} numberOfLines={1}>
+                🔔 {labelFor(notifResolved)}
+              </Text>
+            </Touchable>
             {snapshot.device ? (
               <Touchable
                 accessibilityRole="button"
@@ -726,6 +802,53 @@ export default function ChatScreen() {
           queueSheetRef.current?.dismiss();
         }}
       />
+      <Sheet ref={notifSheetRef} title="Notifications">
+        {(
+          [
+            { value: NotificationMode.ALL_MESSAGES, label: "All messages", detail: "Every run completion, from any device" },
+            { value: NotificationMode.MOBILE_ONLY, label: "Mobile only", detail: "Runs started from this app" },
+            { value: NotificationMode.OFF, label: "Off", detail: "No notifications" },
+            { value: NotificationMode.APP_DEFAULT, label: "App default", detail: "Follow the app-wide setting" },
+          ]
+        ).map(({ value, label, detail }) => {
+          const selected = notifSetting === value;
+          return (
+            <Touchable
+              key={value}
+              accessibilityRole="button"
+              accessibilityLabel={`${label}. ${detail}${selected ? ". Selected" : ""}`}
+              onPress={() => {
+                setNotifSetting(value);
+                void (async () => {
+                  if (params.conversationId) {
+                    await saveConversationSetting(params.conversationId, value);
+                    const app = await loadAppDefault();
+                    setNotifResolved(resolveMode(value, app));
+                  }
+                })();
+                notifSheetRef.current?.dismiss();
+              }}
+              style={styles.permissionRow}
+            >
+              <View style={styles.permissionRowInner}>
+                <View style={styles.permissionText}>
+                  <Text role="body" tone={value === NotificationMode.OFF ? "danger" : undefined}>
+                    {label}
+                  </Text>
+                  <Text role="sub" ink={3}>
+                    {detail}
+                  </Text>
+                </View>
+                {selected ? (
+                  <Text role="bodyEm" tone="accent">
+                    ✓
+                  </Text>
+                ) : null}
+              </View>
+            </Touchable>
+          );
+        })}
+      </Sheet>
       <Sheet ref={controlsSheetRef} title="Permission mode">
         {(
           [
