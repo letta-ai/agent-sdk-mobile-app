@@ -184,6 +184,40 @@ export async function pickCloudEnvironment(conn: Connection): Promise<{ connecti
   }
 }
 
+// ── Profile pictures ────────────────────────────────────────────────────────
+
+export interface AgentProfilePicture {
+  /** Full data URL (data:image/png;base64,...) — renderable directly. */
+  dataUrl: string;
+  /** MemFS commit that produced the image — cache-revision key. */
+  commitSha: string | null;
+}
+
+/**
+ * The agent's profile picture (profile.png in the agent's MemFS). Not exposed
+ * by the portable SDK — direct REST. Returns null when the agent has no
+ * picture (403/404) or on any error: avatars are decoration and must never
+ * surface as a failure.
+ */
+export async function fetchAgentProfilePicture(
+  conn: Connection,
+  agentId: string,
+): Promise<AgentProfilePicture | null> {
+  if (conn.profile.type !== "cloud") return null;
+  try {
+    const body = (await cloudFetch(
+      conn,
+      `/v1/agents/${encodeURIComponent(agentId)}/profile-picture`,
+      { headers: { Accept: "application/json" } },
+    )) as { data_url?: string; commit_sha?: string | null };
+    if (!body?.data_url) return null;
+    return { dataUrl: body.data_url, commitSha: body.commit_sha ?? null };
+  } catch {
+    // 403/404 = no picture set; any other error is swallowed for the same reason.
+    return null;
+  }
+}
+
 // ── Conversations ───────────────────────────────────────────────────────────
 
 export interface ConversationSummary {

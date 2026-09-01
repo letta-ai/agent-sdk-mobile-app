@@ -9,6 +9,8 @@ import { router, useFocusEffect } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, FlatList, RefreshControl, StyleSheet, TextInput, View } from "react-native";
 
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { Image } from "expo-image";
 import { Bloop } from "../components/ui/Bloop";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Header, Screen } from "../components/ui/Screen";
@@ -21,13 +23,14 @@ import { haptic } from "../lib/haptics";
 import {
   createAgent,
   deleteAgent,
-  listAgents,
+    fetchAgentProfilePicture,
+listAgents,
   listModels,
   updateAgent,
   type AgentSummary,
   type ModelOption,
 } from "../lib/letta/api";
-import { getSecret } from "../lib/profiles/profiles";
+import { getSecret, type Profile } from "../lib/profiles/profiles";
 import { useProfiles } from "../lib/profiles/ProfilesContext";
 import { useTheme } from "../theme/ThemeProvider";
 import { radius, space } from "../theme/tokens";
@@ -49,7 +52,49 @@ function shortModel(model: string): string {
   return model.includes("/") ? model.split("/").slice(1).join("/") : model;
 }
 
-function AgentRow({ agent, onPress, onLongPress }: { agent: AgentSummary; onPress: () => void; onLongPress: () => void }) {
+
+const AVATAR_CACHE_PREFIX = "letta.avatar.";
+
+/**
+ * Cache-first: a stored avatar renders instantly, then a background request
+ * validates the MemFS commit — the image is only re-downloaded when the
+ * commit changed. Returns the cache hit immediately (null = nothing cached
+ * and/or nothing on the server — callers fall back to the Bloop mark).
+ */
+async function loadAgentAvatar(
+  conn: { profile: Profile; secret: string },
+  agentId: string,
+): Promise<string | null> {
+  let cachedDataUrl: string | null = null;
+  try {
+    const cached = await AsyncStorage.getItem(AVATAR_CACHE_PREFIX + agentId);
+    if (cached) {
+      const parsed = JSON.parse(cached) as { dataUrl?: string };
+      if (parsed.dataUrl) cachedDataUrl = parsed.dataUrl;
+    }
+  } catch {
+    // Cache read failure is invisible — fall through to the network.
+  }
+  const fresh = await fetchAgentProfilePicture(conn, agentId);
+  if (!fresh) return cachedDataUrl;
+  if (cachedDataUrl) {
+    try {
+      const cached = await AsyncStorage.getItem(AVATAR_CACHE_PREFIX + agentId);
+      const parsed = cached ? (JSON.parse(cached) as { commitSha?: string | null }) : null;
+      if (parsed && parsed.commitSha === fresh.commitSha) return cachedDataUrl;
+    } catch {
+      // fall through — refresh the cache
+    }
+  }
+  try {
+    await AsyncStorage.setItem(AVATAR_CACHE_PREFIX + agentId, JSON.stringify(fresh));
+  } catch {
+    // Cache write failure is invisible too — the image still renders.
+  }
+  return fresh.dataUrl;
+}
+
+function AgentRow({ agent, avatarUrl, onPress, onLongPress }: { agent: AgentSummary; avatarUrl?: string; onPress: () => void; onLongPress: () => void }) {
   const { colors } = useTheme();
   return (
     <Touchable
@@ -61,7 +106,11 @@ function AgentRow({ agent, onPress, onLongPress }: { agent: AgentSummary; onPres
       style={styles.row}
     >
       <View style={styles.rowInner}>
-        <Bloop id={agent.id} />
+        {avatarUrl ? (
+          <Image source={{ uri: avatarUrl }} style={styles.avatar} contentFit="cover" transition={150} />
+        ) : (
+          <Bloop id={agent.id} />
+        )}
         <View style={styles.rowText}>
           <Text role="bodyEm" numberOfLines={1}>
             {agent.name}
@@ -96,6 +145,7 @@ export default function AgentsScreen() {
   const [models, setModels] = useState<ModelOption[]>([]);
   const [draftModel, setDraftModel] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [avatars, setAvatars] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
     if (!activeProfile) return;
@@ -105,6 +155,17 @@ export default function AgentsScreen() {
       const list = await listAgents({ profile: activeProfile, secret });
       loadedAt.current = Date.now();
       setAgents(list);
+      // Profile pictures load after the list renders — decoration, never a blocker.
+      void (async () => {
+        const entries = await Promise.all(
+          list.map(async (agent) => [agent.id, await loadAgentAvatar({ profile: activeProfile, secret }, agent.id)] as const),
+        );
+        const next: Record<string, string> = {};
+        for (const [id, url] of entries) {
+          if (url) next[id] = url;
+        }
+        setAvatars(next);
+      })();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't load agents.");
       setAgents((prev) => prev ?? []);
@@ -254,6 +315,7 @@ export default function AgentsScreen() {
           renderItem={({ item }) => (
             <AgentRow
               agent={item}
+              avatarUrl={avatars[item.id]}
               onPress={() => router.push({ pathname: "/conversations", params: { agentId: item.id, agentName: item.name } })}
               onLongPress={() => showActions(item)}
             />
@@ -341,6 +403,7 @@ export default function AgentsScreen() {
 }
 
 const styles = StyleSheet.create({
+  avatar: { width: 44, height: 44, borderRadius: 999 },
   list: { paddingBottom: space.xxl, flexGrow: 1 },
   row: { paddingHorizontal: space.gutter },
   rowInner: { flexDirection: "row", alignItems: "center", gap: space.md, paddingVertical: 14 },
