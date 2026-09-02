@@ -5,7 +5,10 @@
     "version": "0.1.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": ["bloop", "letta-mobile"],
+    "scheme": [
+      "bloop",
+      "letta-mobile"
+    ],
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "platforms": [
@@ -45,7 +48,8 @@
           }
         }
       ],
-      "expo-web-browser"
+      "expo-web-browser",
+      "./plugins/withBackgroundPoll"
     ],
     "experiments": {
       "typedRoutes": true
