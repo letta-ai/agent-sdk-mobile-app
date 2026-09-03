@@ -10,9 +10,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, FlatList, RefreshControl, StyleSheet, TextInput, View } from "react-native";
 
 import { Bloop } from "../components/ui/Bloop";
+import { Sheet } from "../components/ui/Sheet";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Header, Screen } from "../components/ui/Screen";
-import { Sheet } from "../components/ui/Sheet";
 import { SkeletonList } from "../components/ui/Skeleton";
 import { StatusDot } from "../components/ui/StatusDot";
 import { Text } from "../components/ui/Text";
@@ -96,6 +96,8 @@ export default function AgentsScreen() {
   const [models, setModels] = useState<ModelOption[]>([]);
   const [draftModel, setDraftModel] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const actionsSheetRef = useRef<BottomSheetModal>(null);
+  const [actionTarget, setActionTarget] = useState<AgentSummary | null>(null);
 
   const load = useCallback(async () => {
     if (!activeProfile) return;
@@ -193,11 +195,8 @@ export default function AgentsScreen() {
   };
 
   const showActions = (agent: AgentSummary) => {
-    Alert.alert(agent.name, undefined, [
-      { text: "Rename", onPress: () => openEdit(agent) },
-      { text: "Delete", style: "destructive", onPress: () => confirmDelete(agent) },
-      { text: "Cancel", style: "cancel" },
-    ]);
+    setActionTarget(agent);
+    actionsSheetRef.current?.present();
   };
 
   const filtered = (agents ?? []).filter((a) => a.name.toLowerCase().includes(search.toLowerCase()));
@@ -279,6 +278,11 @@ export default function AgentsScreen() {
               <EmptyState message="No agents yet. Create your first one." actionLabel="Create agent" onAction={openCreate} />
             )
           }
+          ListFooterComponent={
+            <Text role="sub" ink={3} style={styles.footer}>
+              Long-press an agent for actions.
+            </Text>
+          }
         />
       )}
 
@@ -336,11 +340,47 @@ export default function AgentsScreen() {
           </Text>
         </Touchable>
       </Sheet>
+      <Sheet
+        ref={actionsSheetRef}
+        title={actionTarget?.name ?? "Actions"}
+        onSheetDismiss={() => setActionTarget(null)}
+      >
+        {actionTarget ? (
+          <>
+            <Touchable
+              accessibilityRole="button"
+              accessibilityLabel={`Rename ${actionTarget.name}`}
+              onPress={() => {
+                actionsSheetRef.current?.dismiss();
+                openEdit(actionTarget);
+              }}
+              style={styles.actionRow}
+            >
+              <Text role="body">Rename</Text>
+            </Touchable>
+            <Touchable
+              accessibilityRole="button"
+              accessibilityLabel={`Delete ${actionTarget.name}`}
+              onPress={() => {
+                actionsSheetRef.current?.dismiss();
+                confirmDelete(actionTarget);
+              }}
+              style={styles.actionRow}
+            >
+              <Text role="body" tone="danger">
+                Delete
+              </Text>
+            </Touchable>
+          </>
+        ) : null}
+      </Sheet>
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
+  footer: { paddingVertical: 12, textAlign: "center" },
+  actionRow: { paddingVertical: 14 },
   list: { paddingBottom: space.xxl, flexGrow: 1 },
   row: { paddingHorizontal: space.gutter },
   rowInner: { flexDirection: "row", alignItems: "center", gap: space.md, paddingVertical: 14 },

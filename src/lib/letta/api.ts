@@ -207,8 +207,20 @@ export async function listConversations(
   opts: { before?: string; limit?: number } = {},
 ): Promise<ConversationSummary[]> {
   const limit = opts.limit ?? 30;
-  const records = await sdkClient(conn).conversations.list({
-    agentId,
+  // Query params MUST be snake_case: the API ignores the SDK's camelCase
+  // normalization for these (`agentId=` / `orderBy=` are silently dropped),
+  // which returned an unfiltered, creation-ordered list — hiding the agent's
+  // default conversation entirely and showing "(none)" titles everywhere.
+  // The SDK's TS type only declares camelCase keys, but the API reads
+  // snake_case off the wire (camelCase params are silently dropped) —
+  // cast past the type, verified against the live endpoint.
+  const client = sdkClient(conn) as unknown as {
+    conversations: {
+      list: (opts: Record<string, unknown>) => Promise<unknown>;
+    };
+  };
+  const records = (await client.conversations.list({
+    agent_id: agentId,
     limit,
     // Order by last activity. This matters beyond sorting: the API's default
     // list projection omits `summary` and `last_message_at` (every row renders
@@ -217,12 +229,12 @@ export async function listConversations(
     // last_message_at ordering returns hydrated records — real titles,
     // real timestamps, most-recently-active first — which is also the order
     // a chat app wants anyway.
-    orderBy: "lastMessageAt",
+    order_by: "last_message_at",
     order: "desc",
     // The management API pages with an `after` cursor in sort order.
     ...(opts.before ? { after: opts.before } : {}),
-  });
-  return records.map(toConversation);
+  })) as ConversationSummary[];
+  return records;
 }
 
 export async function createConversation(conn: Connection, agentId: string): Promise<string> {
