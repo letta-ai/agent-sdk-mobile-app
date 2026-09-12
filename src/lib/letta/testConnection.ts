@@ -60,7 +60,6 @@ function testRemote(wsUrl: string, token: string): Promise<TestResult> {
         detail: "Use a ws:// or wss:// URL.",
       });
     }
-    target.searchParams.set("channel", "control");
   } catch {
     return Promise.resolve({ ok: false, reason: "invalid_url", detail: "That URL doesn't look valid." });
   }
